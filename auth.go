@@ -16,20 +16,21 @@ type AuthConfig struct {
 }
 
 type DbConfig struct {
-	HostName   string
-	Port       string
-	Username   string
-	Password   string
-	DbName     string
-	UsersTable string
+	HostName      string
+	Port          string
+	Username      string
+	Password      string
+	DbName        string
+	UsersTable    string
+	UsersTableCol string
 }
 
 type LaravelAuthentificator interface {
 	New(config AuthConfig) error
-	SetConnectionToDB(config DbConfig) error
-	SetPrivateKeyFile(file string) error
-	SetPublicKeyFile(file string) error
-	VerifyTokenString(tokenString string) (bool, error)
+	setConnectionToDB(config DbConfig) error
+	setPrivateKeyFile(file string) error
+	setPublicKeyFile(file string) error
+	VerifyTokenString(tokenString string, dbModel interface{}) (bool, interface{}, error)
 }
 
 type GoLaraAuth struct {
@@ -37,22 +38,24 @@ type GoLaraAuth struct {
 	signKey   *rsa.PrivateKey
 	verifyKey *rsa.PublicKey
 	Token     *jwt.Token
+	Config    AuthConfig
 }
 
 func (g *GoLaraAuth) New(config AuthConfig) error {
+	g.Config = config
 	if config.PrivateKeyFile != "" {
-		err := g.SetPrivateKeyFile(config.PrivateKeyFile)
+		err := g.setPrivateKeyFile(config.PrivateKeyFile)
 		if err != nil {
 			return err
 		}
 	}
 	if config.PublicKeyFile != "" {
-		err := g.SetPublicKeyFile(config.PublicKeyFile)
+		err := g.setPublicKeyFile(config.PublicKeyFile)
 		if err != nil {
 			return err
 		}
 	}
-	err := g.SetConnectionToDB(config.DbConfig)
+	err := g.setConnectionToDB(config.DbConfig)
 	if err != nil {
 		return err
 	}
@@ -60,7 +63,7 @@ func (g *GoLaraAuth) New(config AuthConfig) error {
 	return nil
 }
 
-func (g *GoLaraAuth) SetConnectionToDB(config DbConfig) error {
+func (g *GoLaraAuth) setConnectionToDB(config DbConfig) error {
 	var err error
 	g.db, err = gorm.Open("mysql", config.Username+":"+config.Password+"@tcp("+config.HostName+":"+config.Port+")/"+config.DbName+"?charset=utf8&parseTime=True&loc=Local")
 	if err != nil {
@@ -71,7 +74,7 @@ func (g *GoLaraAuth) SetConnectionToDB(config DbConfig) error {
 }
 
 // SetPrivateKeyFile Sets private key file and puts rsa.private key into structure
-func (g *GoLaraAuth) SetPrivateKeyFile(file string) error {
+func (g *GoLaraAuth) setPrivateKeyFile(file string) error {
 	signBytes, err := ioutil.ReadFile(file)
 	if err != nil {
 		return err
@@ -86,7 +89,7 @@ func (g *GoLaraAuth) SetPrivateKeyFile(file string) error {
 }
 
 // SetPrivateKeyFile Sets public key file and puts rsa.publicKey into structure
-func (g *GoLaraAuth) SetPublicKeyFile(file string) error {
+func (g *GoLaraAuth) setPublicKeyFile(file string) error {
 	verifyBytes, err := ioutil.ReadFile(file)
 	if err != nil {
 		return err
@@ -101,7 +104,7 @@ func (g *GoLaraAuth) SetPublicKeyFile(file string) error {
 }
 
 // VerifyTokenString verifies token string and puts Token object into structure
-func (g *GoLaraAuth) VerifyTokenString(tokenString string) (bool, error) {
+func (g *GoLaraAuth) VerifyTokenString(tokenString string, dbModel interface{}) (bool, interface{}, error) {
 	var err error
 	g.Token, err = jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		// Don't forget to validate the alg is what you expect:
@@ -112,14 +115,17 @@ func (g *GoLaraAuth) VerifyTokenString(tokenString string) (bool, error) {
 		return g.verifyKey, nil
 	})
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 
 	if claims, ok := g.Token.Claims.(jwt.MapClaims); ok && g.Token.Valid {
-		fmt.Println(claims["jti"], claims["aud"])
+		err := g.db.First(dbModel, g.Config.DbConfig.UsersTableCol+" = ?", claims["jti"]).Error
+		if err != nil {
+			return false, nil, err
+		} else {
+			return true, dbModel, nil
+		}
 	} else {
-		return false, err
+		return false, nil, err
 	}
-
-	return g.Token.Valid, nil
 }
