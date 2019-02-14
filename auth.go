@@ -16,13 +16,13 @@ type AuthConfig struct {
 }
 
 type DbConfig struct {
-	HostName      string
-	Port          string
-	Username      string
-	Password      string
-	DbName        string
-	UsersTable    string
-	UsersTableCol string
+	HostName       string
+	Port           string
+	Username       string
+	Password       string
+	DbName         string
+	TokensTable    string
+	TokensTableCol string
 }
 
 type LaravelAuthentificator interface {
@@ -119,7 +119,7 @@ func (g *GoLaraAuth) VerifyTokenString(tokenString string, dbModel interface{}) 
 	}
 
 	if claims, ok := g.Token.Claims.(jwt.MapClaims); ok && g.Token.Valid {
-		err := g.db.First(dbModel, g.Config.DbConfig.UsersTableCol+" = ?", claims["jti"]).Error
+		err := g.db.First(dbModel, g.Config.DbConfig.TokensTableCol+" = ?", claims["jti"]).Error
 		if err != nil {
 			return false, nil, err
 		} else {
