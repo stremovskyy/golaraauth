@@ -3,9 +3,10 @@ package golaraauth
 import (
 	"crypto/rsa"
 	"fmt"
+	"io/ioutil"
+
 	"github.com/dgrijalva/jwt-go"
 	"github.com/jinzhu/gorm"
-	"io/ioutil"
 )
 
 type LaravelAuthenticator struct {
@@ -14,6 +15,15 @@ type LaravelAuthenticator struct {
 	verifyKey *rsa.PublicKey
 	Token     *jwt.Token
 	Config    AuthConfig
+}
+
+func (g *LaravelAuthenticator) CloseDBConnection() {
+	if g.db != nil {
+		err := g.db.Close()
+		if err != nil {
+			println(err.Error())
+		}
+	}
 }
 
 func (g *LaravelAuthenticator) New(config AuthConfig) error {
