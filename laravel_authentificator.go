@@ -6,7 +6,8 @@ import (
 	"io/ioutil"
 
 	"github.com/dgrijalva/jwt-go"
-	"github.com/jinzhu/gorm"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 type LaravelAuthenticator struct {
@@ -19,7 +20,13 @@ type LaravelAuthenticator struct {
 
 func (g *LaravelAuthenticator) CloseDBConnection() {
 	if g.db != nil {
-		err := g.db.Close()
+		db, err := g.db.DB()
+		if err != nil {
+			println(err.Error())
+			return
+		}
+
+		err = db.Close()
 		if err != nil {
 			println(err.Error())
 		}
@@ -49,13 +56,13 @@ func (g *LaravelAuthenticator) New(config AuthConfig) error {
 }
 
 func getDBConnectionurl(config DbConfig) string {
-	return config.Username + ":" + config.Password + "@tcp(" + config.HostName + ":" + config.Port + ")/" + config.DbName + "?charset=utf8&parseTime=True&loc=Local"
+	return config.Username + ":" + config.Password + "@tcp(" + config.HostName + ":" + config.Port + ")/" + config.DbName + "?charset=utf8&parseTime=True&loc=UTC"
 }
 
 func (g *LaravelAuthenticator) setConnectionToDB(config DbConfig) error {
 	var err error
-	url := getDBConnectionurl(config)
-	g.db, err = gorm.Open("mysql", url)
+
+	g.db, err = gorm.Open(mysql.Open(getDBConnectionurl(config)))
 	if err != nil {
 		return err
 	}
@@ -99,7 +106,7 @@ func (g *LaravelAuthenticator) VerifyTokenString(tokenString string, dbModel int
 	g.Token, err = jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		// Don't forget to validate the alg is what you expect:
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
-			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 
 		return g.verifyKey, nil

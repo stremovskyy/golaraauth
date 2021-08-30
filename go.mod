@@ -4,6 +4,6 @@ go 1.12
 
 require (
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible
-	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b
-	github.com/jinzhu/gorm v1.9.10
+	gorm.io/driver/mysql v1.1.2 // indirect
+	gorm.io/gorm v1.21.14 // indirect
 )

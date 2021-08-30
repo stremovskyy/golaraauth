@@ -1,9 +1,5 @@
 package golaraauth
 
-import (
-	_ "github.com/jinzhu/gorm/dialects/mysql"
-)
-
 type AuthConfig struct {
 	DbConfig       DbConfig
 	PrivateKeyFile string
