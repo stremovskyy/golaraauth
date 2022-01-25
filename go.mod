@@ -3,7 +3,8 @@ module github.com/karmadon/golaraauth
 go 1.12
 
 require (
-	github.com/dgrijalva/jwt-go v3.2.0+incompatible
-	gorm.io/driver/mysql v1.1.2 // indirect
-	gorm.io/gorm v1.21.14 // indirect
+	github.com/golang-jwt/jwt/v4 v4.1.0
+	github.com/jinzhu/now v1.1.4 // indirect
+	gorm.io/driver/mysql v1.2.2
+	gorm.io/gorm v1.22.4
 )
