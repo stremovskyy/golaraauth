@@ -2,6 +2,7 @@ package golaraauth
 
 import (
 	"crypto/rsa"
+	"encoding/base64"
 	"fmt"
 	"io/ioutil"
 
@@ -35,21 +36,38 @@ func (g *LaravelAuthenticator) CloseDBConnection() {
 
 func (g *LaravelAuthenticator) New(config AuthConfig) error {
 	g.Config = config
-	if config.PrivateKeyFile != "" {
+
+	if config.PrivateKey != "" {
+		err := g.setPrivateKey(config.PrivateKey)
+		if err != nil {
+			return fmt.Errorf("failed to set private key: %s", err.Error())
+		}
+	} else if config.PrivateKeyFile != "" {
 		err := g.setPrivateKeyFile(config.PrivateKeyFile)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to set private key from file: %s", err.Error())
 		}
+	} else {
+		return fmt.Errorf("no private key provided")
 	}
-	if config.PublicKeyFile != "" {
+
+	if config.PublicKey != "" {
+		err := g.setPublicKey(config.PublicKey)
+		if err != nil {
+			return fmt.Errorf("failed to set public key: %s", err.Error())
+		}
+	} else if config.PublicKeyFile != "" {
 		err := g.setPublicKeyFile(config.PublicKeyFile)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to set public key from file: %s", err.Error())
 		}
+	} else {
+		return fmt.Errorf("no public key provided")
 	}
+
 	err := g.setConnectionToDB(config.DbConfig)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to connect to database: %s", err.Error())
 	}
 
 	return nil
@@ -70,18 +88,45 @@ func (g *LaravelAuthenticator) setConnectionToDB(config DbConfig) error {
 	return nil
 }
 
+// base64Decode decodes base64 string or returns original string if decoding fails
+func base64Decode(s string) []byte {
+	base64Decoded, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return []byte(s)
+	}
+
+	return base64Decoded
+}
+
+// setPrivateKey Sets private key and puts rsa.private key into structure
+func (g *LaravelAuthenticator) setPrivateKey(key string) error {
+	signKey, err := jwt.ParseRSAPrivateKeyFromPEM(base64Decode(key))
+	if err != nil {
+		return err
+	}
+
+	g.signKey = signKey
+	return nil
+}
+
 // SetPrivateKeyFile Sets private key file and puts rsa.private key into structure
 func (g *LaravelAuthenticator) setPrivateKeyFile(file string) error {
 	signBytes, err := ioutil.ReadFile(file)
 	if err != nil {
 		return err
 	}
-	signKey, err := jwt.ParseRSAPrivateKeyFromPEM(signBytes)
+
+	return g.setPrivateKey(string(signBytes))
+}
+
+// setPublicKey Sets public key and puts rsa.publicKey into structure
+func (g *LaravelAuthenticator) setPublicKey(key string) error {
+	verifyKey, err := jwt.ParseRSAPublicKeyFromPEM(base64Decode(key))
 	if err != nil {
 		return err
 	}
 
-	g.signKey = signKey
+	g.verifyKey = verifyKey
 	return nil
 }
 
@@ -91,13 +136,8 @@ func (g *LaravelAuthenticator) setPublicKeyFile(file string) error {
 	if err != nil {
 		return err
 	}
-	verifyKey, err := jwt.ParseRSAPublicKeyFromPEM(verifyBytes)
-	if err != nil {
-		return err
-	}
 
-	g.verifyKey = verifyKey
-	return nil
+	return g.setPublicKey(string(verifyBytes))
 }
 
 // VerifyTokenString verifies token string and puts Token object into structure
