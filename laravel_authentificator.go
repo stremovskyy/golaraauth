@@ -4,9 +4,13 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"fmt"
+	"github.com/golang-jwt/jwt/v5"
+	"gorm.io/gorm/logger"
 	"io/ioutil"
+	"log"
+	"os"
+	"time"
 
-	"github.com/golang-jwt/jwt/v4"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -80,9 +84,22 @@ func getDBConnectionurl(config DbConfig) string {
 func (g *LaravelAuthenticator) setConnectionToDB(config DbConfig) error {
 	var err error
 
-	g.db, err = gorm.Open(mysql.Open(getDBConnectionurl(config)))
+	newLogger := logger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags),
+		logger.Config{
+			SlowThreshold:             time.Second,
+			LogLevel:                  logger.Silent,
+			IgnoreRecordNotFoundError: true,
+			ParameterizedQueries:      true,
+			Colorful:                  false,
+		},
+	)
+
+	g.db, err = gorm.Open(mysql.Open(getDBConnectionurl(config)), &gorm.Config{
+		Logger: newLogger,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to connect to database: %s", err.Error())
 	}
 
 	return nil

@@ -2,9 +2,9 @@ package golaraauth
 
 import (
 	"crypto/rsa"
+	"github.com/golang-jwt/jwt/v5"
 	"testing"
 
-	"github.com/golang-jwt/jwt/v4"
 	"gorm.io/gorm"
 )
 
