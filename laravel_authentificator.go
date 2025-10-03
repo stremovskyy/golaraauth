@@ -1,10 +1,12 @@
 package golaraauth
 
 import (
+	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"fmt"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/stremovskyy/cachemar"
 	"gorm.io/gorm/logger"
 	"io/ioutil"
 	"log"
@@ -20,6 +22,7 @@ type LaravelAuthenticator struct {
 	signKey   *rsa.PrivateKey
 	verifyKey *rsa.PublicKey
 	Config    AuthConfig
+	cache     cachemar.Cacher
 }
 
 func (g *LaravelAuthenticator) CloseDBConnection() {
@@ -39,6 +42,7 @@ func (g *LaravelAuthenticator) CloseDBConnection() {
 
 func (g *LaravelAuthenticator) New(config AuthConfig) error {
 	g.Config = config
+	g.cache = config.Cache // Set the cache instance
 
 	if config.PrivateKey != "" {
 		err := g.setPrivateKey(config.PrivateKey)
@@ -158,6 +162,29 @@ func (g *LaravelAuthenticator) setPublicKeyFile(file string) error {
 
 // VerifyTokenString verifies the JWT string and ensures the token reference exists in storage
 func (g *LaravelAuthenticator) VerifyTokenString(tokenString string, dbModel interface{}) (bool, error) {
+	ctx := context.Background()
+
+	// If cache is available, try to get the result from cache first
+	if g.cache != nil {
+		cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
+		var cachedResult bool
+		if err := g.cache.Get(ctx, cacheKey, &cachedResult); err == nil {
+			// Found in cache, return the cached result
+			if cachedResult {
+				// If token was valid in cache, we still need to populate dbModel from cache or DB
+				modelCacheKey := fmt.Sprintf("token_model:%s", tokenString)
+				if err := g.cache.Get(ctx, modelCacheKey, dbModel); err == nil {
+					return true, nil
+				}
+				// If model not in cache but token was valid, fall through to DB lookup
+			} else {
+				// Token was invalid according to cache
+				return false, fmt.Errorf("token is invalid (cached)")
+			}
+		}
+		// Cache miss, continue with normal validation
+	}
+
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		// Don't forget to validate the alg is what you expect:
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
@@ -167,17 +194,76 @@ func (g *LaravelAuthenticator) VerifyTokenString(tokenString string, dbModel int
 		return g.verifyKey, nil
 	})
 	if err != nil {
+		// Cache the invalid result if cache is available
+		if g.cache != nil {
+			cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
+			g.cache.Set(ctx, cacheKey, false, 5*time.Minute, []string{"token_verification"})
+		}
 		return false, err
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 		err := g.db.Table(g.Config.DbConfig.TokensTable).First(dbModel, g.Config.DbConfig.TokensTableCol+" = ?", claims["jti"]).Error
 		if err != nil {
+			// Cache the invalid result if cache is available
+			if g.cache != nil {
+				cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
+				g.cache.Set(ctx, cacheKey, false, 5*time.Minute, []string{"token_verification"})
+			}
 			return false, err
 		} else {
+			// Cache both the validation result and the model if cache is available
+			if g.cache != nil {
+				cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
+				modelCacheKey := fmt.Sprintf("token_model:%s", tokenString)
+
+				// Cache the validation result for 15 minutes
+				g.cache.Set(ctx, cacheKey, true, 15*time.Minute, []string{"token_verification"})
+				// Cache the model data for 15 minutes
+				g.cache.Set(ctx, modelCacheKey, dbModel, 15*time.Minute, []string{"token_model"})
+			}
 			return true, nil
 		}
 	} else {
+		// Cache the invalid result if cache is available
+		if g.cache != nil {
+			cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
+			g.cache.Set(ctx, cacheKey, false, 5*time.Minute, []string{"token_verification"})
+		}
 		return false, fmt.Errorf("invalid token claims")
 	}
+}
+
+// ClearTokenFromCache removes token verification and model data from cache
+func (g *LaravelAuthenticator) ClearTokenFromCache(tokenString string) error {
+	if g.cache == nil {
+		return nil // No cache configured, nothing to clear
+	}
+
+	ctx := context.Background()
+	cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
+	modelCacheKey := fmt.Sprintf("token_model:%s", tokenString)
+
+	// Remove both keys from cache
+	g.cache.Remove(ctx, cacheKey)
+	g.cache.Remove(ctx, modelCacheKey)
+
+	return nil
+}
+
+// ClearAllTokenCache removes all cached token verification data
+func (g *LaravelAuthenticator) ClearAllTokenCache() error {
+	if g.cache == nil {
+		return nil // No cache configured, nothing to clear
+	}
+
+	ctx := context.Background()
+
+	// Remove all token verification and model caches
+	err := g.cache.RemoveByTag(ctx, "token_verification")
+	if err != nil {
+		return err
+	}
+
+	return g.cache.RemoveByTag(ctx, "token_model")
 }

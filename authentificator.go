@@ -7,4 +7,6 @@ type Authenticator interface {
 	setPrivateKeyFile(file string) error
 	setPublicKeyFile(file string) error
 	VerifyTokenString(tokenString string, dbModel interface{}) (bool, error)
+	ClearTokenFromCache(tokenString string) error
+	ClearAllTokenCache() error
 }
