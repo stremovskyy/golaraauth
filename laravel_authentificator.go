@@ -19,7 +19,6 @@ type LaravelAuthenticator struct {
 	db        *gorm.DB
 	signKey   *rsa.PrivateKey
 	verifyKey *rsa.PublicKey
-	Token     *jwt.Token
 	Config    AuthConfig
 }
 
@@ -157,10 +156,9 @@ func (g *LaravelAuthenticator) setPublicKeyFile(file string) error {
 	return g.setPublicKey(string(verifyBytes))
 }
 
-// VerifyTokenString verifies token string and puts Token object into structure
+// VerifyTokenString verifies the JWT string and ensures the token reference exists in storage
 func (g *LaravelAuthenticator) VerifyTokenString(tokenString string, dbModel interface{}) (bool, error) {
-	var err error
-	g.Token, err = jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		// Don't forget to validate the alg is what you expect:
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -172,7 +170,7 @@ func (g *LaravelAuthenticator) VerifyTokenString(tokenString string, dbModel int
 		return false, err
 	}
 
-	if claims, ok := g.Token.Claims.(jwt.MapClaims); ok && g.Token.Valid {
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 		err := g.db.Table(g.Config.DbConfig.TokensTable).First(dbModel, g.Config.DbConfig.TokensTableCol+" = ?", claims["jti"]).Error
 		if err != nil {
 			return false, err
@@ -180,6 +178,6 @@ func (g *LaravelAuthenticator) VerifyTokenString(tokenString string, dbModel int
 			return true, nil
 		}
 	} else {
-		return false, err
+		return false, fmt.Errorf("invalid token claims")
 	}
 }
