@@ -3,18 +3,25 @@ package golaraauth
 import (
 	"context"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	driverMysql "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stremovskyy/cachemar"
-	"gorm.io/gorm/logger"
-	"io/ioutil"
 	"log"
+	"net"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type LaravelAuthenticator struct {
@@ -25,17 +32,27 @@ type LaravelAuthenticator struct {
 	cache     cachemar.Cacher
 }
 
+const (
+	cacheVerificationTag    = "token_verification"
+	cacheModelTag           = "token_model"
+	invalidTokenCacheTTL    = 5 * time.Minute
+	defaultMySQLCharset     = "utf8mb4"
+	invalidCachedTokenError = "token is invalid (cached)"
+)
+
+var sqlIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)?$`)
+
 func (g *LaravelAuthenticator) CloseDBConnection() {
 	if g.db != nil {
 		db, err := g.db.DB()
 		if err != nil {
-			println(err.Error())
+			log.Printf("golaraauth: failed to access sql DB handle: %v", err)
 			return
 		}
 
 		err = db.Close()
 		if err != nil {
-			println(err.Error())
+			log.Printf("golaraauth: failed to close DB connection: %v", err)
 		}
 	}
 }
@@ -47,41 +64,83 @@ func (g *LaravelAuthenticator) New(config AuthConfig) error {
 	if config.PrivateKey != "" {
 		err := g.setPrivateKey(config.PrivateKey)
 		if err != nil {
-			return fmt.Errorf("failed to set private key: %s", err.Error())
+			return fmt.Errorf("failed to set private key: %w", err)
 		}
 	} else if config.PrivateKeyFile != "" {
 		err := g.setPrivateKeyFile(config.PrivateKeyFile)
 		if err != nil {
-			return fmt.Errorf("failed to set private key from file: %s", err.Error())
+			return fmt.Errorf("failed to set private key from file: %w", err)
 		}
-	} else {
-		return fmt.Errorf("no private key provided")
 	}
 
 	if config.PublicKey != "" {
 		err := g.setPublicKey(config.PublicKey)
 		if err != nil {
-			return fmt.Errorf("failed to set public key: %s", err.Error())
+			return fmt.Errorf("failed to set public key: %w", err)
 		}
 	} else if config.PublicKeyFile != "" {
 		err := g.setPublicKeyFile(config.PublicKeyFile)
 		if err != nil {
-			return fmt.Errorf("failed to set public key from file: %s", err.Error())
+			return fmt.Errorf("failed to set public key from file: %w", err)
 		}
 	} else {
-		return fmt.Errorf("no public key provided")
+		return errors.New("no public key provided")
+	}
+
+	if !isSafeSQLIdentifier(config.DbConfig.TokensTable) {
+		return fmt.Errorf("invalid tokens table name: %q", config.DbConfig.TokensTable)
+	}
+	if !isSafeSQLIdentifier(config.DbConfig.TokensTableCol) {
+		return fmt.Errorf("invalid token column name: %q", config.DbConfig.TokensTableCol)
 	}
 
 	err := g.setConnectionToDB(config.DbConfig)
 	if err != nil {
-		return fmt.Errorf("failed to connect to database: %s", err.Error())
+		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	return nil
 }
 
-func getDBConnectionurl(config DbConfig) string {
-	return config.Username + ":" + config.Password + "@tcp(" + config.HostName + ":" + config.Port + ")/" + config.DbName + "?charset=utf8&parseTime=True&loc=UTC"
+func getDBConnectionURL(config DbConfig) string {
+	mysqlConfig := driverMysql.NewConfig()
+	mysqlConfig.User = config.Username
+	mysqlConfig.Passwd = config.Password
+	mysqlConfig.Net = "tcp"
+	mysqlConfig.DBName = config.DbName
+	mysqlConfig.ParseTime = true
+	mysqlConfig.Loc = time.UTC
+	mysqlConfig.Params = map[string]string{
+		"charset": defaultMySQLCharset,
+	}
+
+	switch {
+	case config.HostName != "" && config.Port != "":
+		mysqlConfig.Addr = net.JoinHostPort(config.HostName, config.Port)
+	case config.HostName != "":
+		mysqlConfig.Addr = config.HostName
+	}
+
+	if config.Charset != "" {
+		mysqlConfig.Params["charset"] = config.Charset
+	}
+	if config.TLSConfig != "" {
+		mysqlConfig.TLSConfig = config.TLSConfig
+	}
+	if config.Timeout > 0 {
+		mysqlConfig.Timeout = config.Timeout
+	}
+	if config.ReadTimeout > 0 {
+		mysqlConfig.ReadTimeout = config.ReadTimeout
+	}
+	if config.WriteTimeout > 0 {
+		mysqlConfig.WriteTimeout = config.WriteTimeout
+	}
+	for key, value := range config.Params {
+		mysqlConfig.Params[key] = value
+	}
+
+	return mysqlConfig.FormatDSN()
 }
 
 func (g *LaravelAuthenticator) setConnectionToDB(config DbConfig) error {
@@ -98,11 +157,11 @@ func (g *LaravelAuthenticator) setConnectionToDB(config DbConfig) error {
 		},
 	)
 
-	g.db, err = gorm.Open(mysql.Open(getDBConnectionurl(config)), &gorm.Config{
+	g.db, err = gorm.Open(mysql.Open(getDBConnectionURL(config)), &gorm.Config{
 		Logger: newLogger,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to connect to database: %s", err.Error())
+		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	return nil
@@ -110,9 +169,10 @@ func (g *LaravelAuthenticator) setConnectionToDB(config DbConfig) error {
 
 // base64Decode decodes base64 string or returns original string if decoding fails
 func base64Decode(s string) []byte {
-	base64Decoded, err := base64.StdEncoding.DecodeString(s)
+	trimmed := strings.TrimSpace(s)
+	base64Decoded, err := base64.StdEncoding.DecodeString(trimmed)
 	if err != nil {
-		return []byte(s)
+		return []byte(trimmed)
 	}
 
 	return base64Decoded
@@ -131,7 +191,7 @@ func (g *LaravelAuthenticator) setPrivateKey(key string) error {
 
 // SetPrivateKeyFile Sets private key file and puts rsa.private key into structure
 func (g *LaravelAuthenticator) setPrivateKeyFile(file string) error {
-	signBytes, err := ioutil.ReadFile(file)
+	signBytes, err := os.ReadFile(filepath.Clean(file))
 	if err != nil {
 		return err
 	}
@@ -152,7 +212,7 @@ func (g *LaravelAuthenticator) setPublicKey(key string) error {
 
 // SetPrivateKeyFile Sets public key file and puts rsa.publicKey into structure
 func (g *LaravelAuthenticator) setPublicKeyFile(file string) error {
-	verifyBytes, err := ioutil.ReadFile(file)
+	verifyBytes, err := os.ReadFile(filepath.Clean(file))
 	if err != nil {
 		return err
 	}
@@ -164,28 +224,24 @@ func (g *LaravelAuthenticator) setPublicKeyFile(file string) error {
 func (g *LaravelAuthenticator) VerifyTokenString(tokenString string, dbModel interface{}) (bool, error) {
 	ctx := context.Background()
 
-	// If cache is available, try to get the result from cache first
-	if g.cache != nil {
-		cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
-		var cachedResult bool
-		if err := g.cache.Get(ctx, cacheKey, &cachedResult); err == nil {
-			// Found in cache, return the cached result
-			if cachedResult {
-				// If token was valid in cache, we still need to populate dbModel from cache or DB
-				modelCacheKey := fmt.Sprintf("token_model:%s", tokenString)
-				if err := g.cache.Get(ctx, modelCacheKey, dbModel); err == nil {
-					return true, nil
-				}
-				// If model not in cache but token was valid, fall through to DB lookup
-			} else {
-				// Token was invalid according to cache
-				return false, fmt.Errorf("token is invalid (cached)")
-			}
-		}
-		// Cache miss, continue with normal validation
+	if dbModel == nil {
+		return false, errors.New("dbModel must not be nil")
 	}
 
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+	// Only negative verification results are trusted from cache.
+	if g.cache != nil {
+		cacheKey := tokenVerificationCacheKey(tokenString)
+		var cachedResult bool
+		if err := g.cache.Get(ctx, cacheKey, &cachedResult); err == nil && !cachedResult {
+			return false, errors.New(invalidCachedTokenError)
+		}
+	}
+
+	if g.verifyKey == nil {
+		return false, errors.New("public key is not initialized")
+	}
+
+	token, err := jwt.ParseWithClaims(tokenString, jwt.MapClaims{}, func(token *jwt.Token) (interface{}, error) {
 		// Don't forget to validate the alg is what you expect:
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -194,44 +250,37 @@ func (g *LaravelAuthenticator) VerifyTokenString(tokenString string, dbModel int
 		return g.verifyKey, nil
 	})
 	if err != nil {
-		// Cache the invalid result if cache is available
-		if g.cache != nil {
-			cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
-			g.cache.Set(ctx, cacheKey, false, 5*time.Minute, []string{"token_verification"})
+		g.cacheInvalidToken(ctx, tokenString)
+		return false, err
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		g.cacheInvalidToken(ctx, tokenString)
+		return false, errors.New("invalid token claims")
+	}
+
+	jti, err := tokenJTI(claims)
+	if err != nil {
+		g.cacheInvalidToken(ctx, tokenString)
+		return false, err
+	}
+
+	if g.db == nil {
+		return false, errors.New("database connection is not initialized")
+	}
+
+	err = g.db.Table(g.Config.DbConfig.TokensTable).
+		First(dbModel, g.Config.DbConfig.TokensTableCol+" = ?", jti).
+		Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, err
 		}
 		return false, err
 	}
 
-	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-		err := g.db.Table(g.Config.DbConfig.TokensTable).First(dbModel, g.Config.DbConfig.TokensTableCol+" = ?", claims["jti"]).Error
-		if err != nil {
-			// Cache the invalid result if cache is available
-			if g.cache != nil {
-				cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
-				g.cache.Set(ctx, cacheKey, false, 5*time.Minute, []string{"token_verification"})
-			}
-			return false, err
-		} else {
-			// Cache both the validation result and the model if cache is available
-			if g.cache != nil {
-				cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
-				modelCacheKey := fmt.Sprintf("token_model:%s", tokenString)
-
-				// Cache the validation result for 15 minutes
-				g.cache.Set(ctx, cacheKey, true, 15*time.Minute, []string{"token_verification"})
-				// Cache the model data for 15 minutes
-				g.cache.Set(ctx, modelCacheKey, dbModel, 15*time.Minute, []string{"token_model"})
-			}
-			return true, nil
-		}
-	} else {
-		// Cache the invalid result if cache is available
-		if g.cache != nil {
-			cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
-			g.cache.Set(ctx, cacheKey, false, 5*time.Minute, []string{"token_verification"})
-		}
-		return false, fmt.Errorf("invalid token claims")
-	}
+	return true, nil
 }
 
 // ClearTokenFromCache removes token verification and model data from cache
@@ -241,14 +290,14 @@ func (g *LaravelAuthenticator) ClearTokenFromCache(tokenString string) error {
 	}
 
 	ctx := context.Background()
-	cacheKey := fmt.Sprintf("token_verification:%s", tokenString)
-	modelCacheKey := fmt.Sprintf("token_model:%s", tokenString)
+	cacheKey := tokenVerificationCacheKey(tokenString)
+	modelCacheKey := tokenModelCacheKey(tokenString)
 
 	// Remove both keys from cache
-	g.cache.Remove(ctx, cacheKey)
-	g.cache.Remove(ctx, modelCacheKey)
-
-	return nil
+	return errors.Join(
+		g.cache.Remove(ctx, cacheKey),
+		g.cache.Remove(ctx, modelCacheKey),
+	)
 }
 
 // ClearAllTokenCache removes all cached token verification data
@@ -260,10 +309,50 @@ func (g *LaravelAuthenticator) ClearAllTokenCache() error {
 	ctx := context.Background()
 
 	// Remove all token verification and model caches
-	err := g.cache.RemoveByTag(ctx, "token_verification")
-	if err != nil {
-		return err
+	return errors.Join(
+		g.cache.RemoveByTag(ctx, cacheVerificationTag),
+		g.cache.RemoveByTag(ctx, cacheModelTag),
+	)
+}
+
+func (g *LaravelAuthenticator) cacheInvalidToken(ctx context.Context, tokenString string) {
+	if g.cache == nil {
+		return
 	}
 
-	return g.cache.RemoveByTag(ctx, "token_model")
+	cacheKey := tokenVerificationCacheKey(tokenString)
+	if err := g.cache.Set(ctx, cacheKey, false, invalidTokenCacheTTL, []string{cacheVerificationTag}); err != nil {
+		log.Printf("golaraauth: failed to cache invalid token result: %v", err)
+	}
+}
+
+func tokenJTI(claims jwt.MapClaims) (string, error) {
+	rawJTI, ok := claims["jti"]
+	if !ok {
+		return "", errors.New("token is missing jti claim")
+	}
+
+	jti, ok := rawJTI.(string)
+	if !ok || jti == "" {
+		return "", errors.New("token jti claim must be a non-empty string")
+	}
+
+	return jti, nil
+}
+
+func tokenVerificationCacheKey(tokenString string) string {
+	return fmt.Sprintf("%s:%s", cacheVerificationTag, tokenCacheDigest(tokenString))
+}
+
+func tokenModelCacheKey(tokenString string) string {
+	return fmt.Sprintf("%s:%s", cacheModelTag, tokenCacheDigest(tokenString))
+}
+
+func tokenCacheDigest(tokenString string) string {
+	sum := sha256.Sum256([]byte(tokenString))
+	return hex.EncodeToString(sum[:])
+}
+
+func isSafeSQLIdentifier(identifier string) bool {
+	return sqlIdentifierPattern.MatchString(identifier)
 }

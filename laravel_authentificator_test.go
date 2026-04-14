@@ -1,137 +1,400 @@
 package golaraauth
 
 import (
+	"context"
+	"crypto/rand"
 	"crypto/rsa"
-	"github.com/golang-jwt/jwt/v5"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
+	driverMysql "github.com/go-sql-driver/mysql"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/stremovskyy/cachemar"
+	"github.com/stremovskyy/cachemar/drivers/memory"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-const expiredTokenString = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjNmZWYzZjkzZDg3MGQ4ZTY5ZTEwMWY4ZTk4NTEzNzE5OTJiNGNlZjM0ZjFjY2FjZTZjN2RmZWNmZTgwMjZiMzgyMjQ2ZTA3YjgwNmVhYTk0In0.eyJhdWQiOiIxIiwianRpIjoiM2ZlZjNmOTNkODcwZDhlNjllMTAxZjhlOTg1MTM3MTk5MmI0Y2VmMzRmMWNjYWNlNmM3ZGZlY2ZlODAyNmIzODIyNDZlMDdiODA2ZWFhOTQiLCJpYXQiOjE1NjQ0NzU1ODUsIm5iZiI6MTU2NDQ3NTU4NSwiZXhwIjoxNTk2MDk3OTg1LCJzdWIiOiI0Iiwic2NvcGVzIjpbXX0.sjJImOJ0G83YzkKu0_giOrxxFhOnjGotDepjwyJY8GQVycmB2avecScQ4ExatisF2Uyz4w1REn-vPL_CoYxrKYIdjFVe0-VhobkCsLlYnbnAyJabGSrKIDDpIFByfXeh8uWbbPfT0gVvcG7mk2yVLHb2tCZPpG8VVJI3mGoDJJYtPzmEW0V4ynwhLKUHpcRc-oyLoN8YlfvSjSJYcw5Pjx0orJZueOw-dc6TXbFe-DOVEVJD4yk9ebsYcgxq6IR5YZ7q-wugezYm61IQLcxzAfsQWB3VFt2yi3EJyTxoAj_HKoLQM8wsTYtY6ejVH4k0B_gPC23qROQYpvJznV4zeomBPzPwEvtX1CwE8Vb5KqM28eT5SCKEmFH_wBGBwFAkwrBTvTtc_MkKC53Nehihewo6epoksOKMs-jQcP2bd-vt3l6Qu24EBP5INkSG0PgCKvLMLfqexC-Pprlalz6PXSVNUoiuOlLS_gW1ztqpTbEpwwk1Ux5rxmANRzRiTJTSl7L0I1mcV5xQ-9TcRbqi42YGoRY1U-SxSLzVfTp7GpHnBsrcuPQztlZ9k7o16VbFJ0ZkX2FGf4fCOQ4InJpfs6Oq6fm_wZCAZsQCiYSqYObertaSNRT0tFxjLGbgAYjLybuNBnD7PywYPTlMI4wyzL3355RV9y0zkHjwDihbrUI"
-const notValidTokenString = "Not.Valid.Token-String-jQcP2bd-vt3l6Qu24EBP5INkSG0PgCKvLMLfqexC-Pprlalz6PXSVNUoiuOlLS_gW1ztqpTbEpwwk1Ux5rxmANRzRiTJTSl7L0I1mcV5xQ-9TcRbqi42YGoRY1U-SxSLzVfTp7GpHnBsrcuPQztlZ9k7o16VbFJ0ZkX2FGf4fCOQ4InJpfs6Oq6fm_wZCAZsQCiYSqYObertaSNRT0tFxjLGbgAYjLybuNBnD7PywYPTlMI4wyzL3355RV9y0zkHjwDihbrUI"
-const wrongTokenString = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjNmMjc2ODU5NjVkN2Y5ZDFiYTc3ZmY1MjlhODUyMTA0NGM4NTg3MTI1NWQ1YmQ0ZmFjOGQ2ODk1Y2U3ZDdmMjQ5ZDQzM1jBiYzVlOGQyNGZmIn0.eyJhdWQiOiIxIiwianRpIjoiM2YyNzY4NTk2NWQ3ZjlkMWJhNzdmZjUyOWE4NTIxMDQ0Yzg1ODcxMjU1ZDViZDRmYWM4ZDY4OTVjZTdkN2YyNDlkNDMyMGJjNWU4ZDI0ZmYiLCJpYXQiOjE2MjE5NTc4ODksIm5iZiI6MTYyMTk1Nzg4OSwiZXhwIjoxNjUzNDkzODg5LCJzdWIiOiI1Iiwic2NvcGVzIjpbXX0.Nd7n9OdbKArLuE3fVzF_vRCFTUpLRIyOG9kMh6o37vUtgQlAhzFYmsKF81mBcQzIak0C6mTCXznT7tTdV9jmJiKVYyK26XMIL9eWSz2AkGWlhyS-eC7oorNtz8J4LGoVEhk-ojErc1bWge0o0uM6DhrEuIIatZmVSCl1Hfj9q2p0Vfs-atQQEqCR5ZpcEkS4Nnt34oMyoWtqwZL6hNb-8xO_yLz-XT-i_EQila4ZqwYo77xRPmZbuxtP8ZxXVqP9wHO0G24brK67fPXNXLGasCaPoC3dU2PDgmw9-VoCa68YL9L-hW99G-0mhiPExgH16IyApNNEdtaenCI5qRNPamWD6aF4O3i5w9X_A9kEsyM9_M_vkzX83tFOzDKPYW7_aRD2WEK6I7Nqz509T23YQDbegM4WFuv3u53Kqvnr955rxuPz27ZebySPyKoysBF7wOKMI331JfPATpG1SZm63SMsnel0UzkWVYqJxWrsS_kYeU-qbjD7Fj3KOK7b5UID0r_wOiJTyrW-9l79hwmkOCiMmjhf5X7HGVC3CngTXgB07b0GloKAoJIErQJ8vAEO7QPcFq3wPWdwzpN_wFDfehhdn9LcUUZKzGyt7JkuayBFDyKP_A18_pctusklvrAWwl85CVmtJD99-an6nxEMSktOWRrxsjA2b9NfvNIOuDc"
-const validTokenString = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6Ijg4Y2EwYTE4YjhlZmI5YjRkMDg2YWNkMDc2OWE4OTJjMGI0M2FmZWJhYzJkMGIyOTkxMzE2ODE2ZjljZDg2NWJmZWU0ZTU2MWY2NzU4NzlhIn0.eyJhdWQiOiIxIiwianRpIjoiODhjYTBhMThiOGVmYjliNGQwODZhY2QwNzY5YTg5MmMwYjQzYWZlYmFjMmQwYjI5OTEzMTY4MTZmOWNkODY1YmZlZTRlNTYxZjY3NTg3OWEiLCJpYXQiOjE2Mjg3Nzc0NDUsIm5iZiI6MTYyODc3NzQ0NSwiZXhwIjoxNjYwMzEzNDQ1LCJzdWIiOiIzNSIsInNjb3BlcyI6W119.eYOQeDdmH7bdtw8HjBZ78k0-mwZWS_sqsHDdJwnzEO_Nh4HFT-IBcoFh8vwr8WRGwuY2SNcoxsTiJJKaeYtf9BVS9E1koe9vLxemNMOew2XcCI90CPJNLUI7fSDKqpTQ_9TujyGW4wp-ZaUbyRKcGqoi6R0t5PVJHwRgzJ9w2VXBFBnHe8p1bDgyoGmCIYHSA0Zvy2c0LNr3mMmwOuWNKNFpXfBDxg6TudTum0IsVQC15fcRyoUD0fK2hxOhxP9u-XMKc6u8ts5VQKfhLXBUmNXxIDnBCAEldVAYRJSoLl3HKNNo04NlUB1JAB-PTF7DVVUIM7n54_Zer-AWTFVnLSM3TiC_Bfp0u62LDPSZk0M-hpzjbauJEHrAONxi0I-nUt6rfi-rCYBXqQk110inzVN3xmvJ-tBNIgNZGaRlR5lR2wi9k2qJFGgBmflAdQ9a1O8KIR72pgNdDdF_nC6yBtfHa2YeRtxujYK5g-ice4-VFOFbCCj-vsBEBuZ347TfWdGn9oClCI-S2fvCgly4cBvo1f0aMf6xMP8FnHbVaOfJG80Lm0pNDv3YkWKOM19ffG6yU43lVCvE8MRCvRbfY6dZZdZvQkGqwSswNwyvqJadjyBg_fFNaURjHY8OPZlX0QzVirDao9k7UzPUGPZkGwNifRCpAxPRy-W8AaUuX-Y"
+type testTokenRecord struct {
+	ID        uint   `gorm:"primaryKey"`
+	TokenID   string `gorm:"column:token_id"`
+	Subject   string `gorm:"column:subject"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
 
-func TestLaravelAuthenticator_VerifyTokenString(t *testing.T) {
-	type DBModel struct {
-		ID        int64
-		TokenID   string
-		CreatedAt string
-		UpdatedAt string
+func TestVerifyTokenStringAcceptsValidTokenBackedByDB(t *testing.T) {
+	privateKey, publicKey := loadSampleKeyPair(t)
+	db := newTestDB(t)
+	record := testTokenRecord{TokenID: "valid-token-id", Subject: "user-1"}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatalf("failed to insert token record: %v", err)
 	}
-	type fields struct {
-		db        *gorm.DB
-		signKey   *rsa.PrivateKey
-		verifyKey *rsa.PublicKey
-		Token     *jwt.Token
-		Config    AuthConfig
-	}
-	type args struct {
-		tokenString string
-		dbModel     interface{}
-	}
-	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		want    bool
-		wantErr bool
-	}{
-		{
-			name: "Expired Token",
-			fields: fields{
-				db:        nil,
-				signKey:   nil,
-				verifyKey: nil,
-				Token:     nil,
-				Config:    AuthConfig{},
+
+	auth := &LaravelAuthenticator{
+		db:        db,
+		verifyKey: publicKey,
+		Config: AuthConfig{
+			DbConfig: DbConfig{
+				TokensTable:    "test_token_records",
+				TokensTableCol: "token_id",
 			},
-			args: args{
-				tokenString: expiredTokenString,
-				dbModel:     &DBModel{},
-			},
-			want:    false,
-			wantErr: true,
-		}, {
-			name: "Not Valid Token",
-			fields: fields{
-				db:        nil,
-				signKey:   nil,
-				verifyKey: nil,
-				Token:     nil,
-				Config:    AuthConfig{},
-			},
-			args: args{
-				tokenString: notValidTokenString,
-				dbModel:     &DBModel{},
-			},
-			want:    false,
-			wantErr: true,
-		}, {
-			name: "Wrong Token",
-			fields: fields{
-				db:        nil,
-				signKey:   nil,
-				verifyKey: nil,
-				Token:     nil,
-				Config:    AuthConfig{},
-			},
-			args: args{
-				tokenString: wrongTokenString,
-				dbModel:     &DBModel{},
-			},
-			want:    false,
-			wantErr: true,
-		}, {
-			name: "Valid Token",
-			fields: fields{
-				db:        nil,
-				signKey:   nil,
-				verifyKey: nil,
-				Token:     nil,
-				Config:    AuthConfig{},
-			},
-			args: args{
-				tokenString: validTokenString,
-				dbModel:     &DBModel{},
-			},
-			want:    true,
-			wantErr: false,
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dbConfig := DbConfig{
-				HostName:       "127.0.0.1",
-				Port:           "3306",
-				Username:       "root",
-				Password:       "123698741",
-				DbName:         "123456",
-				TokensTable:    "cab_tokens",
-				TokensTableCol: "token_id",
-			}
 
-			config := AuthConfig{
-				DbConfig:       dbConfig,
-				PrivateKeyFile: "example/keys/dev.rsa",
-				PublicKeyFile:  "example/keys/dev.rsa.pub",
-			}
+	tokenString := signToken(t, privateKey, jwt.MapClaims{
+		"jti": "valid-token-id",
+		"sub": "user-1",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"nbf": time.Now().Add(-time.Minute).Unix(),
+		"iat": time.Now().Add(-time.Minute).Unix(),
+	})
 
-			g := LaravelAuthenticator{}
-			err := g.New(config)
-			if err != nil {
-				panic(err)
-			}
-
-			got, err := g.VerifyTokenString(tt.args.tokenString, tt.args.dbModel)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("VerifyTokenString() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != tt.want {
-				t.Errorf("VerifyTokenString() got = %v, want %v", got, tt.want)
-			}
-		})
+	var result testTokenRecord
+	valid, err := auth.VerifyTokenString(tokenString, &result)
+	if err != nil {
+		t.Fatalf("VerifyTokenString returned unexpected error: %v", err)
 	}
+	if !valid {
+		t.Fatalf("VerifyTokenString returned invalid for a valid token")
+	}
+	if result.TokenID != record.TokenID {
+		t.Fatalf("expected token record %q, got %q", record.TokenID, result.TokenID)
+	}
+}
+
+func TestVerifyTokenStringRejectsRevokedTokenEvenIfLegacyPositiveCacheExists(t *testing.T) {
+	privateKey, publicKey := loadSampleKeyPair(t)
+	manager := newMemoryCacheManager(t)
+	auth := &LaravelAuthenticator{
+		db:        newTestDB(t),
+		verifyKey: publicKey,
+		Config: AuthConfig{
+			DbConfig: DbConfig{
+				TokensTable:    "test_token_records",
+				TokensTableCol: "token_id",
+			},
+			Cache: manager.Current(),
+		},
+		cache: manager.Current(),
+	}
+
+	tokenString := signToken(t, privateKey, jwt.MapClaims{
+		"jti": "revoked-token-id",
+		"sub": "user-2",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"nbf": time.Now().Add(-time.Minute).Unix(),
+		"iat": time.Now().Add(-time.Minute).Unix(),
+	})
+
+	legacyModel := &testTokenRecord{TokenID: "revoked-token-id", Subject: "cached-user"}
+	if err := manager.Current().Set(context.Background(), tokenVerificationCacheKey(tokenString), true, time.Minute, []string{cacheVerificationTag}); err != nil {
+		t.Fatalf("failed to seed verification cache: %v", err)
+	}
+	if err := manager.Current().Set(context.Background(), tokenModelCacheKey(tokenString), legacyModel, time.Minute, []string{cacheModelTag}); err != nil {
+		t.Fatalf("failed to seed model cache: %v", err)
+	}
+
+	var result testTokenRecord
+	valid, err := auth.VerifyTokenString(tokenString, &result)
+	if err == nil {
+		t.Fatalf("expected an error for revoked token")
+	}
+	if valid {
+		t.Fatalf("expected revoked token to be rejected even with cached positive result")
+	}
+	if result.TokenID != "" {
+		t.Fatalf("expected model to stay empty on revoked token, got %+v", result)
+	}
+}
+
+func TestVerifyTokenStringCachesOnlyInvalidJWTResults(t *testing.T) {
+	manager := newMemoryCacheManager(t)
+	auth := &LaravelAuthenticator{
+		db:        newTestDB(t),
+		verifyKey: loadSamplePublicKey(t),
+		Config: AuthConfig{
+			DbConfig: DbConfig{
+				TokensTable:    "test_token_records",
+				TokensTableCol: "token_id",
+			},
+			Cache: manager.Current(),
+		},
+		cache: manager.Current(),
+	}
+
+	var result testTokenRecord
+	const malformedToken = "not-a-jwt"
+
+	valid, err := auth.VerifyTokenString(malformedToken, &result)
+	if err == nil {
+		t.Fatalf("expected malformed token to fail")
+	}
+	if valid {
+		t.Fatalf("expected malformed token to be invalid")
+	}
+
+	var cachedResult bool
+	if err := manager.Current().Get(context.Background(), tokenVerificationCacheKey(malformedToken), &cachedResult); err != nil {
+		t.Fatalf("expected malformed token result to be cached: %v", err)
+	}
+	if cachedResult {
+		t.Fatalf("expected malformed token cache entry to be false")
+	}
+
+	var legacyCacheResult bool
+	if err := manager.Current().Get(context.Background(), "token_verification:"+malformedToken, &legacyCacheResult); err == nil {
+		t.Fatalf("raw token cache key should not exist anymore")
+	}
+}
+
+func TestVerifyTokenStringRejectsWrongSignature(t *testing.T) {
+	manager := newMemoryCacheManager(t)
+	auth := &LaravelAuthenticator{
+		db:        newTestDB(t),
+		verifyKey: loadSamplePublicKey(t),
+		Config: AuthConfig{
+			DbConfig: DbConfig{
+				TokensTable:    "test_token_records",
+				TokensTableCol: "token_id",
+			},
+			Cache: manager.Current(),
+		},
+		cache: manager.Current(),
+	}
+
+	tokenString := signToken(t, generateDifferentPrivateKey(t), jwt.MapClaims{
+		"jti": "wrong-signature-token",
+		"sub": "user-3",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"nbf": time.Now().Add(-time.Minute).Unix(),
+		"iat": time.Now().Add(-time.Minute).Unix(),
+	})
+
+	var result testTokenRecord
+	valid, err := auth.VerifyTokenString(tokenString, &result)
+	if err == nil {
+		t.Fatalf("expected wrong-signature token to fail")
+	}
+	if valid {
+		t.Fatalf("expected wrong-signature token to be invalid")
+	}
+
+	var cachedResult bool
+	if err := manager.Current().Get(context.Background(), tokenVerificationCacheKey(tokenString), &cachedResult); err != nil {
+		t.Fatalf("expected wrong-signature result to be cached: %v", err)
+	}
+	if cachedResult {
+		t.Fatalf("expected wrong-signature token cache entry to be false")
+	}
+}
+
+func TestClearTokenFromCacheUsesHashedKeys(t *testing.T) {
+	manager := newMemoryCacheManager(t)
+	auth := &LaravelAuthenticator{cache: manager.Current()}
+	tokenString := "token-to-clear"
+
+	if err := manager.Current().Set(context.Background(), tokenVerificationCacheKey(tokenString), false, time.Minute, []string{cacheVerificationTag}); err != nil {
+		t.Fatalf("failed to seed verification cache: %v", err)
+	}
+	if err := manager.Current().Set(context.Background(), tokenModelCacheKey(tokenString), testTokenRecord{TokenID: "cached"}, time.Minute, []string{cacheModelTag}); err != nil {
+		t.Fatalf("failed to seed model cache: %v", err)
+	}
+
+	if err := auth.ClearTokenFromCache(tokenString); err != nil {
+		t.Fatalf("ClearTokenFromCache returned error: %v", err)
+	}
+
+	var cachedVerification bool
+	if err := manager.Current().Get(context.Background(), tokenVerificationCacheKey(tokenString), &cachedVerification); err == nil {
+		t.Fatalf("verification cache entry should have been removed")
+	}
+
+	var cachedModel testTokenRecord
+	if err := manager.Current().Get(context.Background(), tokenModelCacheKey(tokenString), &cachedModel); err == nil {
+		t.Fatalf("model cache entry should have been removed")
+	}
+}
+
+func TestNewDoesNotRequirePrivateKey(t *testing.T) {
+	publicKeyBytes, err := os.ReadFile("example/with_keys/keys/dev.rsa.pub")
+	if err != nil {
+		t.Fatalf("failed to read sample public key: %v", err)
+	}
+
+	auth := &LaravelAuthenticator{}
+	err = auth.New(AuthConfig{
+		DbConfig: DbConfig{
+			HostName:       "127.0.0.1",
+			Port:           "65000",
+			Username:       "user",
+			Password:       "p@ss:w/or?d",
+			DbName:         "db",
+			TokensTable:    "test_token_records",
+			TokensTableCol: "token_id",
+		},
+		PublicKey: string(publicKeyBytes),
+	})
+	if err == nil {
+		t.Fatalf("expected database connection error")
+	}
+	if strings.Contains(err.Error(), "no private key provided") {
+		t.Fatalf("private key should be optional, got error: %v", err)
+	}
+}
+
+func TestNewRejectsUnsafeIdentifiersBeforeDBConnect(t *testing.T) {
+	publicKeyBytes, err := os.ReadFile("example/with_keys/keys/dev.rsa.pub")
+	if err != nil {
+		t.Fatalf("failed to read sample public key: %v", err)
+	}
+
+	auth := &LaravelAuthenticator{}
+	err = auth.New(AuthConfig{
+		DbConfig: DbConfig{
+			HostName:       "127.0.0.1",
+			Port:           "3306",
+			Username:       "user",
+			Password:       "password",
+			DbName:         "db",
+			TokensTable:    "tokens;DROP TABLE tokens",
+			TokensTableCol: "token_id",
+		},
+		PublicKey: string(publicKeyBytes),
+	})
+	if err == nil {
+		t.Fatalf("expected invalid identifier error")
+	}
+	if !strings.Contains(err.Error(), "invalid tokens table name") {
+		t.Fatalf("expected invalid table name error, got: %v", err)
+	}
+}
+
+func TestGetDBConnectionURLUsesEscapedDSNAndOptions(t *testing.T) {
+	dsn := getDBConnectionURL(DbConfig{
+		HostName:       "db.internal",
+		Port:           "3307",
+		Username:       "user",
+		Password:       "p@ss:w/or?d",
+		DbName:         "service",
+		TokensTable:    "tokens",
+		TokensTableCol: "token_id",
+		TLSConfig:      "preferred",
+		Charset:        "utf8mb4",
+		Timeout:        3 * time.Second,
+		ReadTimeout:    4 * time.Second,
+		WriteTimeout:   5 * time.Second,
+		Params: map[string]string{
+			"interpolateParams": "true",
+		},
+	})
+
+	cfg, err := driverMysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("generated DSN should be parseable: %v", err)
+	}
+	if cfg.Passwd != "p@ss:w/or?d" {
+		t.Fatalf("expected password to round-trip, got %q", cfg.Passwd)
+	}
+	if cfg.Addr != "db.internal:3307" {
+		t.Fatalf("expected addr db.internal:3307, got %q", cfg.Addr)
+	}
+	if cfg.TLSConfig != "preferred" {
+		t.Fatalf("expected TLS config preferred, got %q", cfg.TLSConfig)
+	}
+	if cfg.Timeout != 3*time.Second || cfg.ReadTimeout != 4*time.Second || cfg.WriteTimeout != 5*time.Second {
+		t.Fatalf("expected timeouts to be preserved, got timeout=%v read=%v write=%v", cfg.Timeout, cfg.ReadTimeout, cfg.WriteTimeout)
+	}
+	if !strings.Contains(dsn, "charset=utf8mb4") || !strings.Contains(dsn, "interpolateParams=true") {
+		t.Fatalf("expected generated DSN to contain custom params, got %q", dsn)
+	}
+}
+
+func newTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		t.Fatalf("failed to open sqlite DB: %v", err)
+	}
+	if err := db.AutoMigrate(&testTokenRecord{}); err != nil {
+		t.Fatalf("failed to migrate sqlite schema: %v", err)
+	}
+
+	return db
+}
+
+func newMemoryCacheManager(t *testing.T) cachemar.Manager {
+	t.Helper()
+
+	manager := cachemar.New()
+	memoryCache := memory.NewWithConfig(memory.Config{MaxSize: 128})
+	manager.Register("memory", memoryCache)
+	manager.SetCurrent("memory")
+
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
+
+	return manager
+}
+
+func loadSampleKeyPair(t *testing.T) (*rsa.PrivateKey, *rsa.PublicKey) {
+	t.Helper()
+
+	privateKeyBytes, err := os.ReadFile("example/with_keys/keys/dev.rsa")
+	if err != nil {
+		t.Fatalf("failed to read sample private key: %v", err)
+	}
+	publicKeyBytes, err := os.ReadFile("example/with_keys/keys/dev.rsa.pub")
+	if err != nil {
+		t.Fatalf("failed to read sample public key: %v", err)
+	}
+
+	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM(privateKeyBytes)
+	if err != nil {
+		t.Fatalf("failed to parse sample private key: %v", err)
+	}
+	publicKey, err := jwt.ParseRSAPublicKeyFromPEM(publicKeyBytes)
+	if err != nil {
+		t.Fatalf("failed to parse sample public key: %v", err)
+	}
+
+	return privateKey, publicKey
+}
+
+func loadSamplePublicKey(t *testing.T) *rsa.PublicKey {
+	t.Helper()
+
+	_, publicKey := loadSampleKeyPair(t)
+	return publicKey
+}
+
+func signToken(t *testing.T, privateKey *rsa.PrivateKey, claims jwt.MapClaims) string {
+	t.Helper()
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tokenString, err := token.SignedString(privateKey)
+	if err != nil {
+		t.Fatalf("failed to sign token: %v", err)
+	}
+
+	return tokenString
+}
+
+func generateDifferentPrivateKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+
+	return key
 }

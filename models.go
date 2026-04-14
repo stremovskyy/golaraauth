@@ -1,6 +1,10 @@
 package golaraauth
 
-import "github.com/stremovskyy/cachemar"
+import (
+	"time"
+
+	"github.com/stremovskyy/cachemar"
+)
 
 type AuthConfig struct {
 	DbConfig       DbConfig
@@ -19,4 +23,10 @@ type DbConfig struct {
 	DbName         string
 	TokensTable    string
 	TokensTableCol string
+	Charset        string
+	TLSConfig      string
+	Timeout        time.Duration
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	Params         map[string]string
 }
